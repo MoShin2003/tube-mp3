@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# App output - downloaded audio should not be committed
+downloads/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

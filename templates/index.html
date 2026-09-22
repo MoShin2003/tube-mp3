@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>tube-mp3</title>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --card: #171a23;
+      --border: #262b38;
+      --text: #e6e8ee;
+      --muted: #98a0b3;
+      --accent: #6d8bff;
+      --accent-press: #5875e8;
+      --danger: #ff6b6b;
+      --ok: #4ade80;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--bg);
+      color: var(--text);
+      font: 16px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      padding: 24px;
+    }
+    .card {
+      width: 100%;
+      max-width: 520px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 28px;
+    }
+    h1 { margin: 0 0 4px; font-size: 24px; }
+    .sub { margin: 0 0 24px; color: var(--muted); font-size: 14px; }
+    label { display: block; font-size: 13px; color: var(--muted); margin: 0 0 6px; }
+    input[type="text"], select {
+      width: 100%;
+      padding: 12px 14px;
+      background: #0d0f16;
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      font-size: 15px;
+    }
+    input[type="text"]:focus, select:focus { outline: 2px solid var(--accent); border-color: transparent; }
+    .row { display: flex; gap: 12px; margin-top: 16px; align-items: flex-end; }
+    .row .grow { flex: 1; }
+    button {
+      width: 100%;
+      margin-top: 20px;
+      padding: 13px 16px;
+      background: var(--accent);
+      color: #fff;
+      border: 0;
+      border-radius: 10px;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button:hover { background: var(--accent-press); }
+    button:disabled { opacity: 0.6; cursor: default; }
+    .status { margin-top: 18px; min-height: 22px; font-size: 14px; }
+    .status.err { color: var(--danger); }
+    .status.ok { color: var(--ok); }
+    .status a { color: var(--accent); font-weight: 600; }
+    .warn {
+      margin: 0 0 20px;
+      padding: 12px 14px;
+      background: #2a1a1a;
+      border: 1px solid #5a2d2d;
+      border-radius: 10px;
+      color: #ffb4b4;
+      font-size: 13px;
+    }
+    .note { margin-top: 22px; color: var(--muted); font-size: 12px; line-height: 1.6; }
+    .spin { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--muted);
+            border-top-color: transparent; border-radius: 50%; animation: s 0.7s linear infinite;
+            vertical-align: -2px; margin-right: 8px; }
+    @keyframes s { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>tube-mp3</h1>
+    <p class="sub">Paste a video URL, get an MP3. Runs locally on your machine.</p>
+
+    {% if not ffmpeg_ok %}
+    <div class="warn">
+      <strong>ffmpeg not found.</strong> The converter needs it to make MP3s.
+      Install ffmpeg, then restart this app. (See the README.)
+    </div>
+    {% endif %}
+
+    <form id="form">
+      <label for="url">Video URL</label>
+      <input type="text" id="url" name="url" placeholder="https://..." autocomplete="off" required />
+
+      <div class="row">
+        <div class="grow">
+          <label for="bitrate">Quality</label>
+          <select id="bitrate" name="bitrate">
+            <option value="128">128 kbps</option>
+            <option value="192" selected>192 kbps</option>
+            <option value="256">256 kbps</option>
+            <option value="320">320 kbps (best)</option>
+          </select>
+        </div>
+      </div>
+
+      <button id="go" type="submit">Convert to MP3</button>
+    </form>
+
+    <div id="status" class="status"></div>
+
+    <p class="note">
+      Only download content you have the right to download &mdash; your own
+      uploads, Creative Commons / public-domain material, or content the
+      rights-holder has permitted. You are responsible for what you convert.
+    </p>
+  </div>
+
+  <script>
+    const form = document.getElementById("form");
+    const btn = document.getElementById("go");
+    const status = document.getElementById("status");
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      status.className = "status";
+      status.innerHTML = '<span class="spin"></span>Working&hellip; this can take a moment.';
+      btn.disabled = true;
+
+      try {
+        const res = await fetch("/convert", { method: "POST", body: new FormData(form) });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Conversion failed.");
+
+        status.className = "status ok";
+        status.innerHTML =
+          'Done: <strong>' + (data.title || data.filename) + '</strong> &mdash; ' +
+          '<a href="' + data.download_url + '">download MP3</a>';
+        // Kick off the download automatically too.
+        window.location.href = data.download_url;
+      } catch (err) {
+        status.className = "status err";
+        status.textContent = err.message;
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
