@@ -21,7 +21,10 @@ from __future__ import annotations
 
 import hmac
 import os
+import re
 import shutil
+import time
+import zipfile
 from pathlib import Path
 
 import yt_dlp
@@ -57,6 +60,62 @@ DOWNLOAD_DIR.mkdir(exist_ok=True)
 def ffmpeg_available() -> bool:
     """True if an `ffmpeg` binary is on the PATH."""
     return shutil.which("ffmpeg") is not None
+
+
+def split_urls(raw: str) -> list[str]:
+    """Turn a blob of pasted text into a clean list of URLs.
+
+    Accepts URLs separated by new lines, spaces, or commas, and keeps only
+    the ones that look like http(s) links.
+    """
+    parts = re.split(r"[\s,]+", (raw or "").strip())
+    return [p for p in parts if p.lower().startswith(("http://", "https://"))]
+
+
+def convert_one(url: str, bitrate: str) -> dict:
+    """Download the best audio for one URL and encode it to MP3.
+
+    Returns a result dict describing success or failure - it never raises,
+    so one bad link in a batch can't sink the rest.
+    """
+    ydl_opts = {
+        # bestaudio => yt-dlp automatically picks the highest-quality audio
+        # source available for THIS video; video is ignored entirely.
+        "format": "bestaudio/best",
+        # %(title)s is sanitized by yt-dlp into a safe filename.
+        "outtmpl": str(DOWNLOAD_DIR / "%(title)s.%(ext)s"),
+        "noplaylist": True,  # one URL -> one file
+        "quiet": True,
+        "no_warnings": True,
+        "postprocessors": [
+            {
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": bitrate,
+            },
+            {"key": "FFmpegMetadata"},
+        ],
+    }
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            # After FFmpegExtractAudio the real output ends in .mp3.
+            produced = Path(ydl.prepare_filename(info)).with_suffix(".mp3")
+    except yt_dlp.utils.DownloadError as exc:
+        return {"url": url, "ok": False, "error": f"Could not download: {exc}"}
+    except Exception as exc:  # noqa: BLE001 - surface anything else to the UI
+        return {"url": url, "ok": False, "error": f"Unexpected error: {exc}"}
+
+    if not produced.exists():
+        return {"url": url, "ok": False, "error": "No MP3 was produced."}
+
+    return {
+        "url": url,
+        "ok": True,
+        "title": info.get("title", produced.stem),
+        "filename": produced.name,
+        "download_url": url_for("download", filename=produced.name),
+    }
 
 
 @app.before_request
@@ -97,13 +156,16 @@ def index():
 
 @app.route("/convert", methods=["POST"])
 def convert():
-    url = (request.form.get("url") or "").strip()
-    bitrate = (request.form.get("bitrate") or "192").strip()
-
-    if not url:
-        return jsonify(error="Please paste a video URL."), 400
+    # Accept the new multi-line "urls" field, and still accept an old single
+    # "url" field for safety.
+    raw = request.form.get("urls") or request.form.get("url") or ""
+    bitrate = (request.form.get("bitrate") or "320").strip()
     if bitrate not in ALLOWED_BITRATES:
-        bitrate = "192"
+        bitrate = "320"
+
+    urls = split_urls(raw)
+    if not urls:
+        return jsonify(error="Please paste at least one video URL (http/https)."), 400
     if not ffmpeg_available():
         return (
             jsonify(
@@ -113,49 +175,35 @@ def convert():
             500,
         )
 
-    ydl_opts = {
-        "format": "bestaudio/best",
-        # %(title)s is sanitized by yt-dlp into a safe filename.
-        "outtmpl": str(DOWNLOAD_DIR / "%(title)s.%(ext)s"),
-        "noplaylist": True,  # one URL -> one file for the web UI
-        "quiet": True,
-        "no_warnings": True,
-        "postprocessors": [
-            {
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "mp3",
-                "preferredquality": bitrate,
-            },
-            {"key": "FFmpegMetadata"},
-        ],
-    }
+    # Convert each link in turn; a failure on one doesn't stop the others.
+    results = [convert_one(u, bitrate) for u in urls]
+    succeeded = [r for r in results if r["ok"]]
 
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            # After FFmpegExtractAudio the real output ends in .mp3.
-            produced = Path(ydl.prepare_filename(info)).with_suffix(".mp3")
-    except yt_dlp.utils.DownloadError as exc:
-        return jsonify(error=f"Could not download that URL: {exc}"), 400
-    except Exception as exc:  # noqa: BLE001 - surface anything else to the UI
-        return jsonify(error=f"Unexpected error: {exc}"), 500
+    # When 2+ tracks succeed, bundle them so the whole batch is one download.
+    zip_url = None
+    if len(succeeded) >= 2:
+        zip_name = f"tube-mp3_batch_{int(time.time())}.zip"
+        # MP3s are already compressed, so store (no re-compression) is fastest.
+        with zipfile.ZipFile(DOWNLOAD_DIR / zip_name, "w", zipfile.ZIP_STORED) as zf:
+            for r in succeeded:
+                path = DOWNLOAD_DIR / r["filename"]
+                if path.exists():
+                    zf.write(path, arcname=r["filename"])
+        zip_url = url_for("download", filename=zip_name)
 
-    if not produced.exists():
-        return jsonify(error="Conversion finished but no MP3 was produced."), 500
-
-    # Hand the browser a URL it can pull the finished file from.
     return jsonify(
-        title=info.get("title", produced.stem),
-        filename=produced.name,
-        download_url=url_for("download", filename=produced.name),
+        results=results,
+        zip_url=zip_url,
+        ok_count=len(succeeded),
+        fail_count=len(results) - len(succeeded),
     )
 
 
 @app.route("/downloads/<path:filename>")
 def download(filename: str):
-    """Serve a finished MP3 as an attachment."""
+    """Serve a finished MP3 (or a batch .zip) as an attachment."""
     # send_from_directory rejects path traversal (e.g. ../) for us.
-    if not filename.lower().endswith(".mp3"):
+    if not filename.lower().endswith((".mp3", ".zip")):
         abort(404)
     return send_from_directory(DOWNLOAD_DIR, filename, as_attachment=True)
 

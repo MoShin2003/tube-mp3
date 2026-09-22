@@ -1,8 +1,13 @@
 # tube-mp3
 
-A tiny **local** web app that turns a video URL into an MP3. Run it on your
-own computer, open `http://127.0.0.1:5000`, paste a URL, click convert, and
-the MP3 downloads to your machine. That's it.
+A tiny **local** web app that turns video URLs into MP3s. Run it on your own
+computer, open `http://127.0.0.1:5000`, paste one or more URLs, click convert,
+and the MP3s download to your machine. That's it.
+
+**Made for sound, not video.** It ignores the picture entirely and grabs the
+best available audio for each link, then encodes to MP3 — default **320 kbps**
+for crisp, clear sound. Paste a whole list of URLs at once and grab them all
+in one **ZIP**.
 
 It's a thin wrapper around two mature open-source tools:
 
@@ -48,8 +53,11 @@ python app.py
 ```
 Open **http://127.0.0.1:5000**. Want a different port? `PORT=8000 python app.py`
 
-Finished files download in your browser and are also saved to the
-`downloads/` folder.
+Paste **one URL per line** to convert several at once. Each finished file
+downloads in your browser and is also saved to the `downloads/` folder; when
+you convert two or more, you also get a one-click **"Download all as ZIP"**
+button. Pick the sound quality from the dropdown — **320 kbps** (default) is
+the crispest.
 
 ---
 

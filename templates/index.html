@@ -30,7 +30,7 @@
     }
     .card {
       width: 100%;
-      max-width: 520px;
+      max-width: 560px;
       background: var(--card);
       border: 1px solid var(--border);
       border-radius: 16px;
@@ -39,7 +39,7 @@
     h1 { margin: 0 0 4px; font-size: 24px; }
     .sub { margin: 0 0 24px; color: var(--muted); font-size: 14px; }
     label { display: block; font-size: 13px; color: var(--muted); margin: 0 0 6px; }
-    input[type="text"], select {
+    textarea, select {
       width: 100%;
       padding: 12px 14px;
       background: #0d0f16;
@@ -47,8 +47,11 @@
       border: 1px solid var(--border);
       border-radius: 10px;
       font-size: 15px;
+      font-family: inherit;
     }
-    input[type="text"]:focus, select:focus { outline: 2px solid var(--accent); border-color: transparent; }
+    textarea { min-height: 120px; resize: vertical; line-height: 1.5; }
+    textarea:focus, select:focus { outline: 2px solid var(--accent); border-color: transparent; }
+    .hint { margin: 6px 0 0; font-size: 12px; color: var(--muted); }
     .row { display: flex; gap: 12px; margin-top: 16px; align-items: flex-end; }
     .row .grow { flex: 1; }
     button {
@@ -68,7 +71,33 @@
     .status { margin-top: 18px; min-height: 22px; font-size: 14px; }
     .status.err { color: var(--danger); }
     .status.ok { color: var(--ok); }
-    .status a { color: var(--accent); font-weight: 600; }
+    .zipbtn {
+      display: inline-block;
+      margin-top: 14px;
+      padding: 11px 16px;
+      background: var(--ok);
+      color: #06240f;
+      border-radius: 10px;
+      font-weight: 700;
+      text-decoration: none;
+      font-size: 14px;
+    }
+    .results { list-style: none; margin: 14px 0 0; padding: 0; }
+    .results li {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      padding: 10px 0;
+      border-top: 1px solid var(--border);
+      font-size: 14px;
+      word-break: break-word;
+    }
+    .results .mark { flex: none; }
+    .results .body { flex: 1; }
+    .results a { color: var(--accent); font-weight: 600; text-decoration: none; }
+    .results a:hover { text-decoration: underline; }
+    .results .fail { color: var(--danger); }
+    .results .errmsg { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
     .warn {
       margin: 0 0 20px;
       padding: 12px 14px;
@@ -88,7 +117,7 @@
 <body>
   <div class="card">
     <h1>tube-mp3</h1>
-    <p class="sub">Paste a video URL, get an MP3. Runs locally on your machine.</p>
+    <p class="sub">Paste one or more video URLs, get MP3s. Runs locally on your machine.</p>
 
     {% if not ffmpeg_ok %}
     <div class="warn">
@@ -98,17 +127,18 @@
     {% endif %}
 
     <form id="form">
-      <label for="url">Video URL</label>
-      <input type="text" id="url" name="url" placeholder="https://..." autocomplete="off" required />
+      <label for="urls">Video URLs</label>
+      <textarea id="urls" name="urls" placeholder="https://...&#10;https://...&#10;https://..." autocomplete="off" required></textarea>
+      <p class="hint">One URL per line. Best available audio is picked automatically for each video.</p>
 
       <div class="row">
         <div class="grow">
-          <label for="bitrate">Quality</label>
+          <label for="bitrate">Sound quality</label>
           <select id="bitrate" name="bitrate">
-            <option value="128">128 kbps</option>
-            <option value="192" selected>192 kbps</option>
+            <option value="320" selected>320 kbps &mdash; best, crisp &amp; clear</option>
             <option value="256">256 kbps</option>
-            <option value="320">320 kbps (best)</option>
+            <option value="192">192 kbps</option>
+            <option value="128">128 kbps &mdash; smallest files</option>
           </select>
         </div>
       </div>
@@ -117,6 +147,7 @@
     </form>
 
     <div id="status" class="status"></div>
+    <ul id="results" class="results"></ul>
 
     <p class="note">
       Only download content you have the right to download &mdash; your own
@@ -129,12 +160,23 @@
   <script>
     const form = document.getElementById("form");
     const btn = document.getElementById("go");
-    const status = document.getElementById("status");
+    const statusEl = document.getElementById("status");
+    const resultsEl = document.getElementById("results");
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, (c) => (
+        { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+      ));
+    }
 
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
-      status.className = "status";
-      status.innerHTML = '<span class="spin"></span>Working&hellip; this can take a moment.';
+      resultsEl.innerHTML = "";
+      const count = (document.getElementById("urls").value.match(/https?:\/\//g) || []).length;
+      statusEl.className = "status";
+      statusEl.innerHTML =
+        '<span class="spin"></span>Converting ' + (count || "your") +
+        ' link' + (count === 1 ? "" : "s") + '&hellip; this can take a bit.';
       btn.disabled = true;
 
       try {
@@ -142,15 +184,45 @@
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || "Conversion failed.");
 
-        status.className = "status ok";
-        status.innerHTML =
-          'Done: <strong>' + (data.title || data.filename) + '</strong> &mdash; ' +
-          '<a href="' + data.download_url + '">download MP3</a>';
-        // Kick off the download automatically too.
-        window.location.href = data.download_url;
+        // Summary line.
+        const okc = data.ok_count, failc = data.fail_count;
+        statusEl.className = "status " + (okc ? "ok" : "err");
+        let summary = "Done: " + okc + " converted";
+        if (failc) summary += ", " + failc + " failed";
+        summary += ".";
+        if (data.zip_url) {
+          summary += '<br /><a class="zipbtn" href="' + data.zip_url + '">' +
+                     '&#11015; Download all (' + okc + ') as ZIP</a>';
+        }
+        statusEl.innerHTML = summary;
+
+        // Per-track list.
+        for (const r of data.results) {
+          const li = document.createElement("li");
+          if (r.ok) {
+            li.innerHTML =
+              '<span class="mark">&#9989;</span>' +
+              '<span class="body"><a href="' + r.download_url + '">' +
+              escapeHtml(r.title || r.filename) + '</a></span>';
+          } else {
+            li.innerHTML =
+              '<span class="mark fail">&#10060;</span>' +
+              '<span class="body">' + escapeHtml(r.url) +
+              '<span class="errmsg">' + escapeHtml(r.error || "Failed.") + '</span></span>';
+          }
+          resultsEl.appendChild(li);
+        }
+
+        // Auto-start the download: the ZIP for a batch, or the single file.
+        if (data.zip_url) {
+          window.location.href = data.zip_url;
+        } else if (okc === 1) {
+          const only = data.results.find((r) => r.ok);
+          if (only) window.location.href = only.download_url;
+        }
       } catch (err) {
-        status.className = "status err";
-        status.textContent = err.message;
+        statusEl.className = "status err";
+        statusEl.textContent = err.message;
       } finally {
         btn.disabled = false;
       }
