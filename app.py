@@ -7,12 +7,19 @@ wrapper around two mature open-source tools:
   * yt-dlp - downloads the best audio stream from a URL
   * ffmpeg - transcodes that stream into an .mp3 (with metadata)
 
+Optional password gate:
+  Set the TUBE_MP3_PASSWORD environment variable and the app shows a login
+  page before anyone can use it. Leave it unset and the app is open (handy
+  when you're the only one using it on localhost). The password matters most
+  when you expose the app to a friend through a tunnel (see the README).
+
 Responsible use: only download content you have the right to download -
 your own uploads, Creative Commons / public-domain material, or content
 the rights-holder has given you permission to download.
 """
 from __future__ import annotations
 
+import hmac
 import os
 import shutil
 from pathlib import Path
@@ -22,12 +29,21 @@ from flask import (
     Flask,
     abort,
     jsonify,
+    redirect,
     render_template,
     request,
     send_from_directory,
+    session,
+    url_for,
 )
 
 app = Flask(__name__)
+# Signs the login cookie. Random per start is fine - a restart just means
+# everyone logs in again.
+app.secret_key = os.environ.get("SECRET_KEY") or os.urandom(24)
+
+# Optional password. Empty/unset => the app is open (no login).
+APP_PASSWORD = os.environ.get("TUBE_MP3_PASSWORD", "").strip()
 
 # MP3 bitrates (kbps) the UI is allowed to request.
 ALLOWED_BITRATES = {"128", "192", "256", "320"}
@@ -43,9 +59,40 @@ def ffmpeg_available() -> bool:
     return shutil.which("ffmpeg") is not None
 
 
+@app.before_request
+def require_login():
+    """Gate every page behind the password, when one is configured."""
+    if not APP_PASSWORD:
+        return None  # no password set -> app is open
+    if request.endpoint in ("login", "static"):
+        return None  # let the login page and static assets through
+    if session.get("authed"):
+        return None  # already logged in
+    return redirect(url_for("login"))
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if not APP_PASSWORD:
+        return redirect(url_for("index"))
+    error = None
+    if request.method == "POST":
+        supplied = request.form.get("password") or ""
+        # Constant-time compare so the password can't be guessed by timing.
+        if hmac.compare_digest(supplied, APP_PASSWORD):
+            session["authed"] = True
+            return redirect(url_for("index"))
+        error = "Wrong password. Try again."
+    return render_template("login.html", error=error)
+
+
 @app.route("/")
 def index():
-    return render_template("index.html", ffmpeg_ok=ffmpeg_available())
+    return render_template(
+        "index.html",
+        ffmpeg_ok=ffmpeg_available(),
+        locked=bool(APP_PASSWORD),
+    )
 
 
 @app.route("/convert", methods=["POST"])
@@ -100,7 +147,7 @@ def convert():
     return jsonify(
         title=info.get("title", produced.stem),
         filename=produced.name,
-        download_url=f"/downloads/{produced.name}",
+        download_url=url_for("download", filename=produced.name),
     )
 
 
@@ -116,5 +163,6 @@ def download(filename: str):
 if __name__ == "__main__":
     # Bind to localhost only - this app is meant to run on your own machine.
     port = int(os.environ.get("PORT", "5000"))
-    print(f"\n  tube-mp3 running at  http://127.0.0.1:{port}\n")
+    lock = "on (password required)" if APP_PASSWORD else "off (open)"
+    print(f"\n  tube-mp3 running at  http://127.0.0.1:{port}   | login: {lock}\n")
     app.run(host="127.0.0.1", port=port, debug=False)
