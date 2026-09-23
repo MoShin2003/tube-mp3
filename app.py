@@ -11,7 +11,7 @@ Optional password gate:
   Set the TUBE_MP3_PASSWORD environment variable and the app shows a login
   page before anyone can use it. Leave it unset and the app is open (handy
   when you're the only one using it on localhost). The password matters most
-  when you expose the app to a friend through a tunnel (see the README).
+  when you expose the app to a friend through a tunnel (see share.bat).
 
 Responsible use: only download content you have the right to download -
 your own uploads, Creative Commons / public-domain material, or content
@@ -69,7 +69,9 @@ def split_urls(raw: str) -> list[str]:
     the ones that look like http(s) links.
     """
     parts = re.split(r"[\s,]+", (raw or "").strip())
-    return [p for p in parts if p.lower().startswith(("http://", "https://"))]
+    urls = [p for p in parts if p.lower().startswith(("http://", "https://"))]
+    # Drop repeats (keeping order) so the same link isn't converted twice.
+    return list(dict.fromkeys(urls))
 
 
 def convert_one(url: str, bitrate: str) -> dict:
@@ -87,6 +89,9 @@ def convert_one(url: str, bitrate: str) -> dict:
         "noplaylist": True,  # one URL -> one file
         "quiet": True,
         "no_warnings": True,
+        # YouTube needs a JavaScript runtime. yt-dlp only tries Deno by
+        # default; also allow Node so either one works.
+        "js_runtimes": {"deno": {}, "node": {}},
         "postprocessors": [
             {
                 "key": "FFmpegExtractAudio",
@@ -98,7 +103,17 @@ def convert_one(url: str, bitrate: str) -> dict:
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
+            # Look before downloading: a playlist or channel link would
+            # otherwise pull down every video in it.
+            info = ydl.extract_info(url, download=False, process=False)
+            if info.get("_type") == "playlist":
+                return {
+                    "url": url,
+                    "ok": False,
+                    "error": "That's a playlist or channel link. "
+                    "Paste links to single videos instead.",
+                }
+            info = ydl.process_ie_result(info, download=True)
             # After FFmpegExtractAudio the real output ends in .mp3.
             produced = Path(ydl.prepare_filename(info)).with_suffix(".mp3")
     except yt_dlp.utils.DownloadError as exc:

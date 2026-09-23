@@ -181,8 +181,9 @@
 
       try {
         const res = await fetch("/convert", { method: "POST", body: new FormData(form) });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || "Conversion failed.");
+        // A server crash or tunnel timeout returns an HTML page, not JSON.
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || "Conversion failed (server error " + res.status + ").");
 
         // Summary line.
         const okc = data.ok_count, failc = data.fail_count;

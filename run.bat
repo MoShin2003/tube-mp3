@@ -12,11 +12,13 @@ echo.
 set /p TUBE_MP3_PASSWORD="Password (blank = none): "
 echo.
 
-echo Installing dependencies (first run may take a minute)...
-python -m pip install --quiet -r requirements.txt
+REM --upgrade keeps yt-dlp current; old versions stop working with YouTube.
+echo Installing / updating dependencies (first run may take a minute)...
+python -m pip install --quiet --upgrade -r requirements.txt
 if errorlevel 1 (
   echo.
-  echo Could not run "python". Try installing it with:  winget install Python.Python.3.12
+  echo Installing dependencies failed. Check your internet connection.
+  echo If "python" was not found, install it with:  winget install Python.Python.3.13
   echo Then close this window, reopen it, and run this file again.
   echo.
   pause
